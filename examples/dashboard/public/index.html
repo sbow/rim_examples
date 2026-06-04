@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>RIM Dashboard</title>
+    <style>
+      body { font-family: sans-serif; margin: 1rem auto; max-width: 900px; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border: 1px solid #ddd; padding: 0.5rem; }
+      th { background: #f0f0f0; text-align: left; }
+    </style>
+  </head>
+  <body>
+    <h1>RoboticsIpcModule Frame Dashboard</h1>
+    <p>Listening for RouterFrame packets via WebSocket.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>source</th>
+          <th>topic</th>
+          <th>seq</th>
+          <th>timestamp_ns</th>
+          <th>payload</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <script>
+      const rows = document.getElementById('rows');
+      const ws = new WebSocket(`ws://${location.host}`);
+
+      ws.onmessage = (event) => {
+        const frame = JSON.parse(event.data);
+        const tr = document.createElement('tr');
+        const values = [
+          frame.source,
+          frame.topic,
+          frame.seq,
+          frame.timestampNs,
+          frame.payload,
+        ];
+        for (const value of values) {
+          const td = document.createElement('td');
+          td.textContent = String(value);
+          tr.appendChild(td);
+        }
+        rows.prepend(tr);
+        while (rows.children.length > 20) {
+          rows.removeChild(rows.lastChild);
+        }
+      };
+    </script>
+  </body>
+</html>

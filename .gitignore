@@ -1,0 +1,4 @@
+/build/
+/examples/dashboard/node_modules/
+/examples/python/.venv/
+__pycache__/
