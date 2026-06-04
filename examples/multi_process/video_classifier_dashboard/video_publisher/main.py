@@ -171,9 +171,26 @@ class VideoCapture:
             self.cap = None
 
     @staticmethod
+    def _is_youtube_url(url: str) -> bool:
+        """Check if a URL is a YouTube link by parsing the hostname."""
+        from urllib.parse import urlparse
+
+        try:
+            parsed = urlparse(url)
+            hostname = parsed.hostname or ""
+            return hostname in (
+                "youtube.com",
+                "www.youtube.com",
+                "m.youtube.com",
+                "youtu.be",
+            )
+        except ValueError:
+            return False
+
+    @staticmethod
     def _resolve_url(source: str) -> Optional[str]:
         """Resolve a video URL. Uses yt-dlp for YouTube links."""
-        if "youtube.com" in source or "youtu.be" in source:
+        if VideoCapture._is_youtube_url(source):
             try:
                 import yt_dlp
 

@@ -457,12 +457,23 @@
             const container = document.getElementById('detections-list');
             if (!topClasses || topClasses.length === 0) return;
 
-            container.innerHTML = topClasses.map(({ name, count }) => `
-                <div class="detection-item">
-                    <span class="detection-class">${name}</span>
-                    <span class="detection-count">${count}</span>
-                </div>
-            `).join('');
+            container.replaceChildren();
+            for (const { name, count } of topClasses) {
+                const item = document.createElement('div');
+                item.className = 'detection-item';
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'detection-class';
+                nameSpan.textContent = name;
+
+                const countSpan = document.createElement('span');
+                countSpan.className = 'detection-count';
+                countSpan.textContent = count;
+
+                item.appendChild(nameSpan);
+                item.appendChild(countSpan);
+                container.appendChild(item);
+            }
         }
 
         // Initialize
