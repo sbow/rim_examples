@@ -1,0 +1,14 @@
+{
+  "name": "rim-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Live RouterFrame dashboard over WebSocket",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "unix-dgram": "^2.0.6",
+    "ws": "^8.18.0"
+  }
+}
