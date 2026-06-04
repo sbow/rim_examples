@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Classifier Dashboard</title>
+    <style>
+        :root {
+            --bg-primary: #0a0a1a;
+            --bg-secondary: #111128;
+            --bg-card: #1a1a3e;
+            --accent: #6c63ff;
+            --accent-glow: rgba(108, 99, 255, 0.3);
+            --text-primary: #e8e8ff;
+            --text-secondary: #9898cc;
+            --success: #00e676;
+            --warning: #ffab40;
+            --danger: #ff5252;
+            --border: rgba(108, 99, 255, 0.2);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Animated background */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background:
+                radial-gradient(ellipse at 20% 50%, rgba(108, 99, 255, 0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(0, 230, 118, 0.03) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 80%, rgba(255, 82, 82, 0.03) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            padding: 16px 24px;
+            background: var(--bg-card);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .header h1 {
+            font-size: 1.5rem;
+            background: linear-gradient(135deg, var(--accent), #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .status-badge.connected {
+            background: rgba(0, 230, 118, 0.1);
+            color: var(--success);
+            border: 1px solid rgba(0, 230, 118, 0.3);
+        }
+
+        .status-badge.disconnected {
+            background: rgba(255, 82, 82, 0.1);
+            color: var(--danger);
+            border: 1px solid rgba(255, 82, 82, 0.3);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .connected .status-dot { background: var(--success); }
+        .disconnected .status-dot { background: var(--danger); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+
+        /* Main grid layout */
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 380px;
+            grid-template-rows: auto auto;
+            gap: 20px;
+        }
+
+        /* Video panel */
+        .video-panel {
+            grid-row: 1 / 3;
+            background: var(--bg-card);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .video-panel .panel-header {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+        }
+
+        #video-canvas {
+            width: 100%;
+            display: block;
+            background: #000;
+        }
+
+        /* Stats cards */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            padding: 16px;
+            text-align: center;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(108, 99, 255, 0.15);
+        }
+
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-card:nth-child(1) .stat-value { color: var(--success); }
+        .stat-card:nth-child(2) .stat-value { color: var(--accent); }
+        .stat-card:nth-child(3) .stat-value { color: var(--warning); }
+        .stat-card:nth-child(4) .stat-value { color: #e040fb; }
+
+        /* Charts panel */
+        .charts-panel {
+            background: var(--bg-card);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .chart-container {
+            position: relative;
+            height: 120px;
+            margin-top: 12px;
+        }
+
+        .chart-canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Detections list */
+        .detections-panel {
+            background: var(--bg-card);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            padding: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .detection-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            margin-top: 8px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            border-left: 3px solid var(--accent);
+        }
+
+        .detection-class {
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .detection-count {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            background: var(--bg-primary);
+            padding: 2px 10px;
+            border-radius: 12px;
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg-secondary); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 3px; }
+
+        @media (max-width: 1200px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+            .video-panel {
+                grid-row: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎯 Video Classifier Dashboard</h1>
+            <div class="status-badge disconnected" id="status-badge">
+                <span class="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+        </div>
+
+        <div class="grid">
+            <!-- Video Feed -->
+            <div class="video-panel">
+                <div class="panel-header">
+                    <span class="panel-title">📹 Live Detection Feed</span>
+                    <span id="resolution" style="font-size: 0.8rem; color: var(--text-secondary)">--</span>
+                </div>
+                <canvas id="video-canvas" width="640" height="480"></canvas>
+            </div>
+
+            <!-- Stats Cards -->
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-fps">0</div>
+                    <div class="stat-label">FPS</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-inference">0</div>
+                    <div class="stat-label">Inference (ms)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-total">0</div>
+                    <div class="stat-label">Total (ms)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-detections">0</div>
+                    <div class="stat-label">Objects</div>
+                </div>
+            </div>
+
+            <!-- Performance Chart -->
+            <div class="charts-panel">
+                <span class="panel-title">📊 Processing Time History</span>
+                <div class="chart-container">
+                    <canvas class="chart-canvas" id="perf-chart"></canvas>
+                </div>
+            </div>
+
+            <!-- Top Detections -->
+            <div class="detections-panel">
+                <span class="panel-title">🏷️ Top Detected Classes</span>
+                <div id="detections-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('video-canvas');
+        const ctx = canvas.getContext('2d');
+        const perfCanvas = document.getElementById('perf-chart');
+        const perfCtx = perfCanvas.getContext('2d');
+
+        let ws = null;
+        let pendingMetadata = null;
+        let frameCount = 0;
+
+        // Performance chart data
+        const chartData = {
+            inference: [],
+            total: [],
+            maxPoints: 50
+        };
+
+        function connect() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${location.host}`);
+            ws.binaryType = 'arraybuffer';
+
+            ws.onopen = () => {
+                setStatus(true);
+            };
+
+            ws.onmessage = (event) => {
+                if (typeof event.data === 'string') {
+                    // JSON metadata message
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'frame') {
+                        pendingMetadata = msg;
+                        updateStats(msg.stats);
+                        updateChart(msg.stats.history);
+                        updateDetections(msg.stats.topClasses);
+                        document.getElementById('resolution').textContent =
+                            `${msg.width}×${msg.height}`;
+                    }
+                } else {
+                    // Binary frame data
+                    if (pendingMetadata) {
+                        renderFrame(event.data, pendingMetadata);
+                        pendingMetadata = null;
+                    }
+                }
+            };
+
+            ws.onclose = () => {
+                setStatus(false);
+                setTimeout(connect, 2000);
+            };
+
+            ws.onerror = () => {
+                ws.close();
+            };
+        }
+
+        function setStatus(connected) {
+            const badge = document.getElementById('status-badge');
+            const text = document.getElementById('status-text');
+            badge.className = `status-badge ${connected ? 'connected' : 'disconnected'}`;
+            text.textContent = connected ? 'Live' : 'Reconnecting...';
+        }
+
+        function renderFrame(data, meta) {
+            const { width, height, channels } = meta;
+            canvas.width = width;
+            canvas.height = height;
+
+            const imgData = ctx.createImageData(width, height);
+            const src = new Uint8Array(data);
+
+            // Convert BGR to RGBA
+            for (let i = 0, j = 0; i < src.length; i += channels, j += 4) {
+                imgData.data[j] = src[i + 2];     // R (from B)
+                imgData.data[j + 1] = src[i + 1]; // G
+                imgData.data[j + 2] = src[i];     // B (from R)
+                imgData.data[j + 3] = 255;        // A
+            }
+
+            ctx.putImageData(imgData, 0, 0);
+            frameCount++;
+        }
+
+        function updateStats(stats) {
+            document.getElementById('stat-fps').textContent = stats.fps;
+            document.getElementById('stat-inference').textContent = stats.avgInferenceMs;
+            document.getElementById('stat-total').textContent = stats.avgTotalMs;
+            document.getElementById('stat-detections').textContent = stats.avgDetections;
+        }
+
+        function updateChart(history) {
+            if (!history) return;
+
+            const w = perfCanvas.width = perfCanvas.offsetWidth * 2;
+            const h = perfCanvas.height = perfCanvas.offsetHeight * 2;
+            perfCtx.clearRect(0, 0, w, h);
+
+            const drawLine = (data, color, maxVal) => {
+                if (data.length < 2) return;
+                perfCtx.beginPath();
+                perfCtx.strokeStyle = color;
+                perfCtx.lineWidth = 2;
+
+                for (let i = 0; i < data.length; i++) {
+                    const x = (i / (data.length - 1)) * w;
+                    const y = h - (data[i] / maxVal) * h * 0.9;
+                    if (i === 0) perfCtx.moveTo(x, y);
+                    else perfCtx.lineTo(x, y);
+                }
+                perfCtx.stroke();
+
+                // Gradient fill
+                perfCtx.lineTo(w, h);
+                perfCtx.lineTo(0, h);
+                perfCtx.closePath();
+                const gradient = perfCtx.createLinearGradient(0, 0, 0, h);
+                gradient.addColorStop(0, color.replace('1)', '0.2)'));
+                gradient.addColorStop(1, color.replace('1)', '0)'));
+                perfCtx.fillStyle = gradient;
+                perfCtx.fill();
+            };
+
+            const maxVal = Math.max(
+                ...history.total,
+                ...history.inference,
+                30
+            );
+
+            drawLine(history.total, 'rgba(255, 171, 64, 1)', maxVal);
+            drawLine(history.inference, 'rgba(108, 99, 255, 1)', maxVal);
+        }
+
+        function updateDetections(topClasses) {
+            const container = document.getElementById('detections-list');
+            if (!topClasses || topClasses.length === 0) return;
+
+            container.innerHTML = topClasses.map(({ name, count }) => `
+                <div class="detection-item">
+                    <span class="detection-class">${name}</span>
+                    <span class="detection-count">${count}</span>
+                </div>
+            `).join('');
+        }
+
+        // Initialize
+        connect();
+    </script>
+</body>
+</html>

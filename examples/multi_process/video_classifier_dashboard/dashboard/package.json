@@ -1,0 +1,14 @@
+{
+  "name": "video-classifier-dashboard",
+  "version": "1.0.0",
+  "description": "Real-time video classification dashboard with performance metrics",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js --dev"
+  },
+  "dependencies": {
+    "express": "^4.18.0",
+    "ws": "^8.14.0"
+  }
+}
