@@ -1,0 +1,5 @@
+# Python deps for the video_source publisher. RoboticsIpcModule itself has no
+# Python deps — these belong to the example only.
+yt-dlp>=2024.1.0
+# tomllib is stdlib on Python 3.11+; this backport covers 3.10 and earlier.
+tomli>=2.0.1; python_version < "3.11"

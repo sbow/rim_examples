@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RIM · Video Classifier Dashboard</title>
+<style>
+  :root { --bg:#0a0e16; --panel:#121826; --line:#1f2a3d; --txt:#dbe4f3;
+          --dim:#7c8aa5; --accent:#36d1b7; --warn:#ffb454; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;
+         background:radial-gradient(1200px 600px at 70% -10%,#13203a,var(--bg));
+         color:var(--txt); }
+  header { display:flex; align-items:center; gap:12px; padding:14px 22px;
+           border-bottom:1px solid var(--line); }
+  header h1 { font-size:15px; margin:0; letter-spacing:.5px; font-weight:600; }
+  header .pill { font-size:11px; color:var(--dim); border:1px solid var(--line);
+                 padding:3px 9px; border-radius:20px; }
+  #dot { width:9px; height:9px; border-radius:50%; background:#444; box-shadow:0 0 8px #444; }
+  #dot.live { background:var(--accent); box-shadow:0 0 10px var(--accent); }
+  main { display:grid; grid-template-columns:minmax(0,2.3fr) 320px; gap:18px; padding:18px 22px; }
+  .stage { position:relative; background:#000; border:1px solid var(--line);
+           border-radius:12px; overflow:hidden; aspect-ratio:16/9; }
+  .stage canvas { position:absolute; inset:0; width:100%; height:100%; }
+  #video { image-rendering:auto; }
+  aside { display:flex; flex-direction:column; gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card h2 { margin:0 0 10px; font-size:11px; text-transform:uppercase;
+             letter-spacing:1.2px; color:var(--dim); font-weight:600; }
+  .kpis { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .kpi .v { font-size:26px; font-weight:700; color:#fff; }
+  .kpi .v small { font-size:12px; color:var(--dim); font-weight:500; }
+  .kpi .l { font-size:11px; color:var(--dim); }
+  .spark { width:100%; height:54px; display:block; }
+  .bar { height:8px; background:#0c1322; border-radius:6px; overflow:hidden; margin-top:6px; }
+  .bar > div { height:100%; width:0; background:linear-gradient(90deg,var(--accent),#4f9cff); transition:width .3s; }
+  .row { display:flex; justify-content:space-between; font-size:12px; margin:5px 0; }
+  .row span:last-child { color:#fff; }
+  footer { color:var(--dim); font-size:11px; padding:0 22px 20px; }
+  code { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <div id="dot"></div>
+  <h1>RoboticsIpcModule — Video Classifier Dashboard</h1>
+  <span class="pill" id="backend">backend: —</span>
+  <span class="pill">router → SHM sideband → browser</span>
+</header>
+
+<main>
+  <div class="stage">
+    <canvas id="video"></canvas>
+    <canvas id="overlay"></canvas>
+  </div>
+
+  <aside>
+    <div class="card">
+      <h2>Pipeline</h2>
+      <div class="kpis">
+        <div class="kpi"><div class="v" id="fps">0<small> fps</small></div><div class="l">throughput</div></div>
+        <div class="kpi"><div class="v" id="boxes">0</div><div class="l">detections</div></div>
+        <div class="kpi"><div class="v" id="infer">0<small> ms</small></div><div class="l">GPU inference</div></div>
+        <div class="kpi"><div class="v" id="e2e">0<small> ms</small></div><div class="l">capture→render</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Inference time</h2>
+      <canvas class="spark" id="sparkInfer"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>End-to-end latency</h2>
+      <canvas class="spark" id="sparkE2e"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>System load</h2>
+      <div class="row"><span>CPU</span><span id="cpuv">0%</span></div>
+      <div class="bar"><div id="cpubar"></div></div>
+      <div class="row"><span>load avg (1m / 5m / 15m)</span><span id="load">— / — / —</span></div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  Bulk RGB frames travel peer-to-peer through <code>/dev/shm</code> sideband rings;
+  the C++ router only forwards 64&nbsp;B notification frames. Boxes &amp; labels are
+  decoded from the detection sideband.
+</footer>
+
+<script>
+const COCO = ["person","bicycle","car","motorcycle","airplane","bus","train","truck","boat","traffic light","fire hydrant","stop sign","parking meter","bench","bird","cat","dog","horse","sheep","cow","elephant","bear","zebra","giraffe","backpack","umbrella","handbag","tie","suitcase","frisbee","skis","snowboard","sports ball","kite","baseball bat","baseball glove","skateboard","surfboard","tennis racket","bottle","wine glass","cup","fork","knife","spoon","bowl","banana","apple","sandwich","orange","broccoli","carrot","hot dog","pizza","donut","cake","chair","couch","potted plant","bed","dining table","toilet","tv","laptop","mouse","remote","keyboard","cell phone","microwave","oven","toaster","sink","refrigerator","book","clock","vase","scissors","teddy bear","hair drier","toothbrush"];
+
+// Mirror of coco_class_color() in detector.hpp so browser labels match boxes.
+function classColor(cls) {
+  let h = ((cls * 0.61803398875) % 1) * 6;
+  const i = Math.floor(h), f = h - i, q = 1 - f;
+  const c = v => Math.round(v * 230 + 25);
+  let r,g,b;
+  switch (((i % 6) + 6) % 6) {
+    case 0: [r,g,b]=[c(1),c(f),c(0)]; break;
+    case 1: [r,g,b]=[c(q),c(1),c(0)]; break;
+    case 2: [r,g,b]=[c(0),c(1),c(f)]; break;
+    case 3: [r,g,b]=[c(0),c(q),c(1)]; break;
+    case 4: [r,g,b]=[c(f),c(0),c(1)]; break;
+    default:[r,g,b]=[c(1),c(0),c(q)];
+  }
+  return `rgb(${r},${g},${b})`;
+}
+
+const video = document.getElementById('video');
+const overlay = document.getElementById('overlay');
+const vctx = video.getContext('2d');
+const octx = overlay.getContext('2d');
+let frameW = 0, frameH = 0, imgData = null, latestBoxes = [];
+
+function ensureSize(w, h) {
+  if (w === frameW && h === frameH) return;
+  frameW = w; frameH = h;
+  video.width = w; video.height = h;
+  overlay.width = w; overlay.height = h;
+  imgData = vctx.createImageData(w, h);
+  document.getElementById('backend').textContent = `${w}×${h} RGB · /dev/shm`;
+}
+
+function drawFrame(buf) {
+  const dv = new DataView(buf);
+  const w = dv.getUint16(0, true), h = dv.getUint16(2, true);
+  ensureSize(w, h);
+  const rgb = new Uint8Array(buf, 8);
+  const out = imgData.data;
+  for (let i = 0, j = 0; i < w * h; i++, j += 3) {
+    const o = i * 4;
+    out[o] = rgb[j]; out[o+1] = rgb[j+1]; out[o+2] = rgb[j+2]; out[o+3] = 255;
+  }
+  vctx.putImageData(imgData, 0, 0);
+  drawOverlay();
+}
+
+function drawOverlay() {
+  octx.clearRect(0, 0, frameW, frameH);
+  octx.lineWidth = 2;
+  octx.font = '13px ui-monospace, monospace';
+  octx.textBaseline = 'bottom';
+  for (const b of latestBoxes) {
+    const col = classColor(b.cls);
+    octx.strokeStyle = col;
+    octx.strokeRect(b.x, b.y, b.w, b.h);
+    const label = `${COCO[b.cls] || 'object'} ${(b.score*100).toFixed(0)}%`;
+    const tw = octx.measureText(label).width + 8;
+    octx.fillStyle = col;
+    octx.fillRect(b.x, Math.max(0, b.y - 16), tw, 16);
+    octx.fillStyle = '#06121a';
+    octx.fillText(label, b.x + 4, Math.max(14, b.y - 3));
+  }
+}
+
+// --- sparklines --------------------------------------------------------------
+function makeSpark(id, color) {
+  const cv = document.getElementById(id);
+  const ctx = cv.getContext('2d');
+  const data = [];
+  const cap = 90;
+  function push(v) {
+    data.push(v); if (data.length > cap) data.shift();
+    const w = cv.width = cv.clientWidth, h = cv.height = 54;
+    ctx.clearRect(0, 0, w, h);
+    const max = Math.max(1, ...data);
+    ctx.beginPath();
+    data.forEach((d, i) => {
+      const x = (i / (cap - 1)) * w, y = h - (d / max) * (h - 6) - 3;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.stroke();
+    ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+    ctx.fillStyle = color + '22'; ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = '11px monospace';
+    ctx.fillText(`${data[data.length-1].toFixed(1)} ms  (max ${max.toFixed(0)})`, 6, 13);
+  }
+  return push;
+}
+const sparkInfer = makeSpark('sparkInfer', '#36d1b7');
+const sparkE2e = makeSpark('sparkE2e', '#ffb454');
+
+// --- websocket ---------------------------------------------------------------
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}`);
+  ws.binaryType = 'arraybuffer';
+  const dot = document.getElementById('dot');
+  ws.onopen = () => dot.classList.add('live');
+  ws.onclose = () => { dot.classList.remove('live'); setTimeout(connect, 1000); };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== 'string') { drawFrame(ev.data); return; }
+    const m = JSON.parse(ev.data);
+    if (m.type !== 'stats') return;
+    latestBoxes = m.boxes || [];
+    document.getElementById('fps').innerHTML = `${m.fps.toFixed(1)}<small> fps</small>`;
+    document.getElementById('boxes').textContent = latestBoxes.length;
+    document.getElementById('infer').innerHTML = `${m.infer_ms.toFixed(1)}<small> ms</small>`;
+    document.getElementById('e2e').innerHTML = `${m.e2e_ms.toFixed(0)}<small> ms</small>`;
+    sparkInfer(m.infer_ms); sparkE2e(m.e2e_ms);
+    const cpu = Math.min(100, m.cpu || 0);
+    document.getElementById('cpuv').textContent = cpu.toFixed(0) + '%';
+    document.getElementById('cpubar').style.width = cpu + '%';
+    if (m.load) document.getElementById('load').textContent =
+      m.load.map(x => x.toFixed(2)).join(' / ');
+  };
+}
+connect();
+</script>
+</body>
+</html>

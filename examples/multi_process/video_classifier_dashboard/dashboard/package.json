@@ -1,0 +1,15 @@
+{
+  "name": "rim-vcd-dashboard",
+  "version": "1.0.0",
+  "description": "RoboticsIpcModule video_classifier_dashboard — Node.js viewer peer",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "smol-toml": "^1.3.0",
+    "ws": "^8.18.0"
+  }
+}

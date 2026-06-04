@@ -1,0 +1,111 @@
+# ============================================================================
+# RoboticsIpcModule — video_classifier_dashboard demo topology
+# ----------------------------------------------------------------------------
+# ONE config file, consumed by FOUR processes in THREE languages:
+#
+#   process 0  router        (C++)     reads [router]/[[peers]]/[[routes]]
+#                                       through router/topology_loader.hpp
+#   process 1  video_source  (Python)  reads its [[peers]] entry + sideband
+#   process 2  ml_inference  (C++/CUDA) reads its [[peers]] entry + sidebands
+#   process 3  dashboard_feed(Node.js) reads its [[peers]] entry
+#
+# The router carries only the 64 B control-plane RouterFrame (ADR 0008): a
+# "frame N is ready" notification whose sideband_seq/len/idx descriptor points
+# the consumer at the right slot in a shared-memory ring. The bulk RGB pixels
+# never travel through the router — they live in the [[peers.sideband]] regions
+# below, exactly the control-plane/bulk split ADR 0005 prescribes.
+#
+# Transport mix (Phase H mixed-transport router, ADR 0014):
+#   * video_source + ml_inference ride UDS  (the Python ctypes bridge and the
+#     C++ peer both speak AF_UNIX SOCK_DGRAM).
+#   * dashboard_feed rides UDP             (Node's stdlib dgram is UDP-only).
+#   A single MixedRouterServer fans frames across both in one in-process hop.
+# ============================================================================
+
+[router]
+listen     = "uds:/tmp/rim_vcd_router.sock"   # primary listen → UDS peers
+listen_udp = "udp:127.0.0.1:19200"            # extra listen   → UDP peers (Node)
+
+# --- process 1: Python video source (publishes raw frames) -------------------
+[[peers]]
+id    = 1
+name  = "video_source"
+local = "uds:/tmp/rim_vcd_source.sock"
+
+  # Sideband region the Python publisher writes decoded RGB frames into.
+  # memory_class = "shm" → plain shm_open + mmap, reachable from every language.
+  [[peers.sideband]]
+  class             = "vision_rgb"
+  name              = "/rim_vcd_source_frames"
+  max_payload_bytes = 691200            # one 640x360 RGB24 frame
+  memory_class      = "shm"
+
+# --- process 2: C++/CUDA YOLO inference (consumes raw, publishes annotated) ---
+[[peers]]
+id    = 5
+name  = "ml_inference"
+local = "uds:/tmp/rim_vcd_ml.sock"
+
+  # Sideband 0: annotated (boxes-overlaid) RGB frames.
+  [[peers.sideband]]
+  class             = "ml_overlay_rgb"
+  name              = "/rim_vcd_annotated_frames"
+  max_payload_bytes = 691200
+  memory_class      = "shm"
+
+  # Sideband 1: packed detection list (x,y,w,h,score,cls per box) so the
+  # browser can render crisp class/score labels over the video. Demonstrates
+  # multiple sideband regions per peer keyed by the same frame sequence.
+  [[peers.sideband]]
+  class             = "ml_detections"
+  name              = "/rim_vcd_detections"
+  max_payload_bytes = 1536           # 64 boxes * 24 B
+  memory_class      = "shm"
+
+# --- process 3: Node.js dashboard (consumes annotated frames + stats) ---------
+[[peers]]
+id    = 8
+name  = "dashboard_feed"
+local = "udp:127.0.0.1:19208"
+
+# --- routes (transport-agnostic; just peer ids) ------------------------------
+[[routes]]
+source = 1            # video_source  → ml_inference
+dest   = [5]
+
+[[routes]]
+source = 5            # ml_inference  → dashboard_feed
+dest   = [8]
+
+# --- topic catalog (declarative; validated at load, ignored on hot path) -----
+[[topics]]
+id            = 10
+name          = "raw_frame"
+payload_class = "vision_rgb"
+
+[[topics]]
+id            = 20
+name          = "annotated_frame"
+payload_class = "ml_overlay_rgb"
+
+# ============================================================================
+# [video] — demo-specific knobs. The RIM topology loader ignores unknown
+# top-level tables, so this rides along in the same file and is parsed by the
+# publisher (Python), the ML peer (C++) and the dashboard (Node) directly.
+# ============================================================================
+[video]
+# A public, always-on YouTube live stream works best (no end-of-stream). Any
+# normal video URL works too. Override at launch: `./launch.sh <youtube_url>`.
+youtube_url = "https://www.youtube.com/watch?v=jfKfPfyJRdk"
+width       = 640
+height      = 360
+fps         = 15
+# yt-dlp format selector; keeps the pulled stream small for low latency.
+yt_format   = "best[height<=720]"
+
+[ml]
+# Path to a YOLOv8 TensorRT engine (.engine) OR ONNX model. Empty string →
+# the built-in CUDA saliency detector runs instead, so the pipeline works
+# end-to-end with no model download. See ml_inference/README notes.
+model_path  = ""
+conf_thresh = 0.35
