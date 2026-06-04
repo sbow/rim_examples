@@ -33,12 +33,18 @@
       ws.onmessage = (event) => {
         const frame = JSON.parse(event.data);
         const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td>${frame.source}</td>
-          <td>${frame.topic}</td>
-          <td>${frame.seq}</td>
-          <td>${frame.timestampNs}</td>
-          <td>${frame.payload}</td>`;
+        const values = [
+          frame.source,
+          frame.topic,
+          frame.seq,
+          frame.timestampNs,
+          frame.payload,
+        ];
+        for (const value of values) {
+          const td = document.createElement('td');
+          td.textContent = String(value);
+          tr.appendChild(td);
+        }
         rows.prepend(tr);
         while (rows.children.length > 20) {
           rows.removeChild(rows.lastChild);
