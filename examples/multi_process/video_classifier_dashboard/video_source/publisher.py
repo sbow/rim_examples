@@ -75,6 +75,11 @@ def start_ffmpeg(url: str, width: int, height: int, fps: int) -> subprocess.Pope
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        # Pace input at its native frame rate. Without this, ffmpeg races through
+        # each freshly-downloaded HLS segment (faster-than-realtime burst) and
+        # then stalls while fetching the next one — the "chunky" sprint/freeze
+        # cycle. -re emits frames steadily and lets the next segment prefetch.
+        "-re",
         "-i", url,
         "-an",                                   # no audio
         "-vf", f"fps={fps},scale={width}:{height}",
@@ -82,6 +87,25 @@ def start_ffmpeg(url: str, width: int, height: int, fps: int) -> subprocess.Pope
         "pipe:1",
     ]
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
+
+
+def _read_frame(stream, n: int) -> bytes:
+    """Read exactly ``n`` bytes (one full RGB frame) from ffmpeg's stdout.
+
+    ffmpeg's stdout is an unbuffered pipe, so a single ``read(n)`` returns only
+    what one ``read()`` syscall yields — usually a partial frame (~one pipe
+    buffer). Loop until a whole frame is assembled, or return short on real EOF
+    (ffmpeg exited / stream ended).
+    """
+    chunks = []
+    remaining = n
+    while remaining > 0:
+        chunk = stream.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 def main() -> int:
@@ -97,7 +121,7 @@ def main() -> int:
     video = cfg.get("video", {})
     width = int(video.get("width", 640))
     height = int(video.get("height", 360))
-    fps = int(video.get("fps", 15))
+    fps = int(video.get("fps", ))
     youtube_url = args.url or video["youtube_url"]
     yt_format = video.get("yt_format", "best[height<=720]")
 
@@ -128,13 +152,24 @@ def main() -> int:
     fps_count = 0
     cur_fps = 0.0
     try:
-        url = resolve_stream_url(youtube_url, yt_format)
+        try:
+            url = resolve_stream_url(youtube_url, yt_format)
+        except subprocess.CalledProcessError:
+            print(
+                f"[video_source] yt-dlp could not extract a stream from {youtube_url}\n"
+                "  - the stream may have ended or be region-locked / members-only, or\n"
+                "  - yt-dlp is out of date (YouTube changes often). Try, in order:\n"
+                "      .venv/bin/pip install -U yt-dlp\n"
+                "      .venv/bin/pip install -U --pre 'yt-dlp[default]'   # nightly\n"
+                "  - or pick another source:  ./launch.sh <youtube_url>",
+                file=sys.stderr, flush=True)
+            return 1
         proc = start_ffmpeg(url, width, height, fps)
         assert proc.stdout is not None
 
         while not stop:
-            buf = proc.stdout.read(slot_bytes)
-            if not buf or len(buf) < slot_bytes:
+            buf = _read_frame(proc.stdout, slot_bytes)
+            if len(buf) < slot_bytes:
                 print("[video_source] stream ended/stalled, exiting", flush=True)
                 break
 

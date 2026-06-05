@@ -1,0 +1,5 @@
+{
+  "//": "Scopes the cross-language Node helper (frame_shm.js) to ES modules so it can be imported by the dashboard. Not a published package.",
+  "type": "module",
+  "private": true
+}

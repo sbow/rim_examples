@@ -28,6 +28,7 @@ die() { printf '\033[1;31m[launch] %s\033[0m\n' "$*" >&2; exit 1; }
 
 command -v cmake  >/dev/null || die "cmake not found"
 command -v node   >/dev/null || die "node not found"
+command -v npm    >/dev/null || die "npm not found — on Debian/Ubuntu it ships separately from node (sudo apt install npm)"
 command -v python3>/dev/null || die "python3 not found"
 command -v ffmpeg >/dev/null || die "ffmpeg not found (apt install ffmpeg)"
 [ -d "${RIM_DIR:-}" ] || die "RoboticsIpcModule not found; set RIM_DIR"
@@ -52,6 +53,11 @@ if [ ! -d "$HERE/.venv" ]; then
   "$HERE/.venv/bin/pip" -q install -r "$HERE/video_source/requirements.txt"
 fi
 PY="$HERE/.venv/bin/python"
+
+# yt-dlp goes stale fast as YouTube changes its internals ("No video formats
+# found!"); keep it current on every run. Best-effort — don't fail when offline.
+"$HERE/.venv/bin/pip" -q install -U yt-dlp >/dev/null 2>&1 \
+  || log "warning: could not update yt-dlp (offline?) — a stale yt-dlp may fail to fetch streams"
 
 # --- 3. node deps for the dashboard -----------------------------------------
 if [ ! -d "$HERE/dashboard/node_modules" ]; then
@@ -83,10 +89,13 @@ log "starting ml inference"
 sleep 0.3
 
 log "starting video source (Python SHM publisher)"
+# Put the venv's bin on PATH so the publisher's `yt-dlp` lookup resolves — running
+# .venv/bin/python alone does not add .venv/bin to PATH.
+VENV_PATH="$HERE/.venv/bin:$PATH"
 if [ -n "$YOUTUBE_URL" ]; then
-  "$PY" "$HERE/video_source/publisher.py" --config "$TOPO" --url "$YOUTUBE_URL" & PIDS+=($!)
+  PATH="$VENV_PATH" "$PY" "$HERE/video_source/publisher.py" --config "$TOPO" --url "$YOUTUBE_URL" & PIDS+=($!)
 else
-  "$PY" "$HERE/video_source/publisher.py" --config "$TOPO" & PIDS+=($!)
+  PATH="$VENV_PATH" "$PY" "$HERE/video_source/publisher.py" --config "$TOPO" & PIDS+=($!)
 fi
 
 log "running — press Ctrl-C to stop"
