@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <stdexcept>
 
@@ -74,6 +76,7 @@ struct YoloTrt::Impl {
     void* d_out = nullptr;    // [84*8400] float
     uint8_t* d_rgb = nullptr; // [W*H*3]
     int out_attrs = 84, out_anchors = 8400;
+    std::string in_name, out_name;  // engine I/O tensor names (TRT 10+ enqueueV3)
     std::vector<float> h_out;
     cudaStream_t stream{};
     int alloc_w = 0, alloc_h = 0;
@@ -95,18 +98,60 @@ YoloTrt::YoloTrt(const std::string& engine_path, int net_size, float conf)
     if (!f) throw std::runtime_error("cannot open engine " + engine_path);
     std::vector<char> blob((std::istreambuf_iterator<char>(f)), {});
 
+    // Ultralytics `yolo export format=engine` prepends a metadata header to the
+    // serialized engine: [int32 LE json_len][json...][engine...]. A plain engine
+    // (e.g. from trtexec) has no such prefix and starts with the TRT magic tag.
+    // Detect and skip the JSON header, else deserializeCudaEngine reads the
+    // length bytes as a bad magic tag ("header.magicTag == kEXPECTED_MAGIC_TAG").
+    const char* data = blob.data();
+    size_t size = blob.size();
+    if (size > 4) {
+        int32_t meta_len = 0;
+        std::memcpy(&meta_len, data, sizeof(meta_len));
+        if (meta_len > 0 && static_cast<size_t>(meta_len) + 4 < size && data[4] == '{') {
+            data += 4 + meta_len;
+            size -= 4 + meta_len;
+            std::fprintf(stderr, "[trt] skipped %d B Ultralytics metadata header\n", meta_len);
+        }
+    }
+
     impl_->runtime = nvinfer1::createInferRuntime(g_logger);
-    impl_->engine = impl_->runtime->deserializeCudaEngine(blob.data(), blob.size());
+    impl_->engine = impl_->runtime->deserializeCudaEngine(data, size);
     if (!impl_->engine) throw std::runtime_error("deserializeCudaEngine failed");
     impl_->ctx = impl_->engine->createExecutionContext();
     cuda_check(cudaStreamCreate(&impl_->stream), "stream");
+
+    // TensorRT 10+ dropped index-based bindings/enqueueV2 in favour of named
+    // tensors + enqueueV3. Discover the I/O tensor names and require the raw
+    // single-output YOLOv8 head — an engine exported with embedded NMS has a
+    // different multi-output signature this decoder cannot read.
+    int n_in = 0, n_out = 0;
+    for (int i = 0; i < impl_->engine->getNbIOTensors(); ++i) {
+        const char* name = impl_->engine->getIOTensorName(i);
+        const auto mode = impl_->engine->getTensorIOMode(name);
+        if (mode == nvinfer1::TensorIOMode::kINPUT) { impl_->in_name = name; ++n_in; }
+        else if (mode == nvinfer1::TensorIOMode::kOUTPUT) { impl_->out_name = name; ++n_out; }
+    }
+    if (n_in != 1 || n_out != 1)
+        throw std::runtime_error(
+            "unexpected engine I/O (" + std::to_string(n_in) + " in / " +
+            std::to_string(n_out) + " out); expected the raw YOLOv8 head with a "
+            "single [1,84,8400] output — re-export without NMS "
+            "(e.g. `yolo export ... format=engine nms=False`)");
+
+    // Derive the output geometry from the engine: shape (1, attrs, anchors).
+    const nvinfer1::Dims od = impl_->engine->getTensorShape(impl_->out_name.c_str());
+    if (od.nbDims == 3 && od.d[1] > 4 && od.d[2] > 0) {
+        impl_->out_attrs = static_cast<int>(od.d[1]);
+        impl_->out_anchors = static_cast<int>(od.d[2]);
+    }
 
     const int n = net_size;
     cuda_check(cudaMalloc(&impl_->d_in, sizeof(float) * 3 * n * n), "malloc in");
     cuda_check(cudaMalloc(&impl_->d_out,
                           sizeof(float) * impl_->out_attrs * impl_->out_anchors),
                "malloc out");
-    impl_->h_out.resize(impl_->out_attrs * impl_->out_anchors);
+    impl_->h_out.resize(static_cast<size_t>(impl_->out_attrs) * impl_->out_anchors);
 }
 
 YoloTrt::~YoloTrt() {
@@ -135,19 +180,23 @@ std::vector<Detection> YoloTrt::infer(const uint8_t* rgb, int W, int H) {
     preprocess_kernel<<<grid, block, 0, s.stream>>>(
         s.d_rgb, W, H, static_cast<float*>(s.d_in), net, scale, pad_x, pad_y);
 
-    void* bindings[] = {s.d_in, s.d_out};
-    s.ctx->enqueueV2(bindings, s.stream, nullptr);
+    s.ctx->setTensorAddress(s.in_name.c_str(), s.d_in);
+    s.ctx->setTensorAddress(s.out_name.c_str(), s.d_out);
+    if (!s.ctx->enqueueV3(s.stream))
+        throw std::runtime_error("TensorRT enqueueV3 failed");
     cuda_check(cudaMemcpyAsync(s.h_out.data(), s.d_out,
                               sizeof(float) * s.out_attrs * s.out_anchors,
                               cudaMemcpyDeviceToHost, s.stream), "d2h");
     cuda_check(cudaStreamSynchronize(s.stream), "sync");
 
-    // Decode YOLOv8 [84, 8400], attribute-major: row a, anchor i -> [a*8400+i].
+    // Decode YOLOv8 [attrs, anchors], attribute-major: row a, anchor i -> [a*A+i].
+    // attrs = 4 box coords + N class scores (no objectness channel in v8).
     const int A = s.out_anchors;
+    const int num_classes = s.out_attrs - 4;
     std::vector<Detection> cand;
     for (int i = 0; i < A; ++i) {
         int best = -1; float bestp = s.conf;
-        for (int c = 0; c < 80; ++c) {
+        for (int c = 0; c < num_classes; ++c) {
             const float p = s.h_out[(4 + c) * A + i];
             if (p > bestp) { bestp = p; best = c; }
         }
