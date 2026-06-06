@@ -1,0 +1,20 @@
+# Build output (CMake)
+/build/
+
+# Python: launcher-managed venv + bytecode caches
+/.venv/
+__pycache__/
+*.pyc
+
+# Node: dashboard dependencies (restored by `npm install`)
+/dashboard/node_modules/
+
+# Model weights / exported detectors — large and machine-specific.
+# A .engine is tied to its TensorRT version + GPU arch, so it must be rebuilt
+# per machine rather than committed (see README "Detector backends").
+*.pt
+*.onnx
+*.engine
+
+# Local, uncommitted environment overrides
+/.env
