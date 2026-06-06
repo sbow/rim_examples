@@ -121,7 +121,7 @@ def main() -> int:
     video = cfg.get("video", {})
     width = int(video.get("width", 640))
     height = int(video.get("height", 360))
-    fps = int(video.get("fps", ))
+    fps = int(video.get("fps", 15))
     youtube_url = args.url or video["youtube_url"]
     yt_format = video.get("yt_format", "best[height<=720]")
 
