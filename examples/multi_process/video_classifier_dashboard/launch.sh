@@ -9,9 +9,16 @@
 # Ctrl-C. Open http://localhost:8080 once it is up.
 #
 # Env overrides:
-#   RIM_DIR        path to a RoboticsIpcModule checkout (default: sibling repo)
-#   VCD_HTTP_PORT  dashboard port (default 8080)
-#   VCD_FORCE_CPU  set to 1 to skip CUDA and build the CPU detector
+#   RIM_DIR            path to a RoboticsIpcModule checkout (default: sibling repo)
+#   VCD_HTTP_PORT      dashboard port (default 8080)
+#   VCD_FORCE_CPU      set to 1 to skip CUDA and build the CPU detector
+#   VCD_WITH_TENSORRT  set to 1 to build the real YOLOv8 TensorRT detector
+#                      (requires the TensorRT C++ SDK + a model in topology.toml)
+#   TENSORRT_DIR       TensorRT SDK dir for a tarball install (holds
+#                      include/NvInfer.h, lib/libnvinfer.so). Unneeded on Jetson
+#                      or apt installs where TensorRT lives under /usr.
+#   CMAKE_CUDA_ARCHITECTURES  GPU arch, e.g. 86 (RTX 30xx), 87 (Jetson Orin).
+#                      Defaults to "native" — set explicitly when cross-building.
 # ============================================================================
 set -euo pipefail
 
@@ -40,6 +47,19 @@ cleanup_shm
 # --- 1. build the C++ peers --------------------------------------------------
 CMAKE_ARGS=(-S "$HERE" -B "$HERE/build" -DRIM_DIR="$RIM_DIR" -DCMAKE_BUILD_TYPE=Release)
 [ "${VCD_FORCE_CPU:-0}" = "1" ] && CMAKE_ARGS+=(-DVCD_FORCE_CPU=ON)
+[ "${VCD_WITH_TENSORRT:-0}" = "1" ] && CMAKE_ARGS+=(-DVCD_WITH_TENSORRT=ON)
+[ -n "${TENSORRT_DIR:-}" ] && CMAKE_ARGS+=(-DTENSORRT_DIR="$TENSORRT_DIR")
+[ -n "${CMAKE_CUDA_ARCHITECTURES:-}" ] && CMAKE_ARGS+=(-DCMAKE_CUDA_ARCHITECTURES="$CMAKE_CUDA_ARCHITECTURES")
+
+# Surface the resolved build config and catch mistyped knobs (e.g. VCD_WITH_TNESORRT)
+# that would otherwise silently no-op and leave you on the saliency fallback.
+for v in "${!VCD_@}"; do
+  case "$v" in
+    VCD_FORCE_CPU|VCD_WITH_TENSORRT|VCD_HTTP_PORT) ;;
+    *) log "warning: unrecognized env var '$v' — typo? (known: VCD_FORCE_CPU, VCD_WITH_TENSORRT, VCD_HTTP_PORT)" ;;
+  esac
+done
+log "build config: TensorRT=${VCD_WITH_TENSORRT:-0} force_cpu=${VCD_FORCE_CPU:-0} arch=${CMAKE_CUDA_ARCHITECTURES:-native}"
 log "configuring + building C++ (router, ml)…"
 cmake "${CMAKE_ARGS[@]}" >/dev/null
 cmake --build "$HERE/build" -j >/dev/null
@@ -85,7 +105,10 @@ log "starting dashboard  ->  http://localhost:${VCD_HTTP_PORT:-8080}"
 sleep 0.3
 
 log "starting ml inference"
-"$HERE/build/rim_vcd_ml" "$TOPO" & PIDS+=($!)
+# For a TensorRT tarball install, make its runtime libs resolvable at load time
+# (no-op on Jetson/apt where libnvinfer is already on the default library path).
+LD_LIBRARY_PATH="${TENSORRT_DIR:+$TENSORRT_DIR/lib:}${LD_LIBRARY_PATH:-}" \
+  "$HERE/build/rim_vcd_ml" "$TOPO" & PIDS+=($!)
 sleep 0.3
 
 log "starting video source (Python SHM publisher)"

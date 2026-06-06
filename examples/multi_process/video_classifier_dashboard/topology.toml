@@ -99,13 +99,18 @@ payload_class = "ml_overlay_rgb"
 youtube_url = "https://www.youtube.com/watch?v=X4VbdwhkE10"
 width       = 640
 height      = 360
-fps         = 30 
+fps         = 15
 # yt-dlp format selector; keeps the pulled stream small for low latency.
 yt_format   = "best[height<=720]"
 
 [ml]
-# Path to a YOLOv8 TensorRT engine (.engine) OR ONNX model. Empty string →
-# the built-in CUDA saliency detector runs instead, so the pipeline works
-# end-to-end with no model download. See ml_inference/README notes.
-model_path  = ""
+# Path to a YOLOv8 TensorRT engine (.engine), relative to the launch directory.
+# Used only when the ML peer is built with -DVCD_WITH_TENSORRT=ON; otherwise the
+# built-in CUDA saliency detector runs (and this is ignored with a warning), so
+# the pipeline still works end-to-end with no model.
+#
+# IMPORTANT: a .engine is tied to its TensorRT version AND GPU arch — build it on
+# the same machine/JetPack you run it on (see README "Detector backends" and
+# "Running on Jetson Orin"). Empty string → always use the saliency fallback.
+model_path  = "yolov8n.engine"
 conf_thresh = 0.35
