@@ -24,6 +24,26 @@ fabric without a single byte of glue code between them.
 - **No heavyweight deps** — no OpenCV, no ROS; `ffmpeg` decodes and the rest is
   hand-rolled.
 
+### Contents
+
+- **Getting started** —
+  [Try it in 30 seconds](#try-it-in-30-seconds) ·
+  [Choosing a video source](#choosing-a-video-source) ·
+  [Frame rate & smooth playback](#frame-rate-resolution--smooth-playback)
+- **Understand it** —
+  [How it works](#how-it-works) ·
+  [Requirements](#requirements)
+- **Going further (GPU / TensorRT / Jetson)** —
+  [Building manually](#building-manually) ·
+  [Installing the TensorRT C++ SDK](#installing-the-tensorrt-c-sdk-x86-desktop) ·
+  [Enabling real YOLO](#enabling-real-yolo-with-launchsh) ·
+  [Running on Jetson Orin](#running-on-jetson-orin) ·
+  [Detector backends](#detector-backends)
+- **Reference** —
+  [Troubleshooting](#troubleshooting) ·
+  [Design notes](#design-notes) ·
+  [Project layout](#project-layout)
+
 ---
 
 ## Try it in 30 seconds
@@ -45,6 +65,10 @@ four processes and wires them through `topology.toml`.
 
 > No GPU? It just works — the build drops to the CPU detector automatically.
 > Want to force it? `VCD_FORCE_CPU=1 ./launch.sh`.
+
+> **New here?** That's the whole demo — you're done. Everything below is optional:
+> how it works, tuning the stream, and the advanced GPU / TensorRT / Jetson builds.
+> Use the [Contents](#contents) to jump straight to what you need.
 
 ---
 
@@ -166,6 +190,13 @@ External dependencies are allowed here (unlike RIM core):
 
 ---
 
+## Going further
+
+Everything from here is **optional**. The 30-second quickstart already gives you a
+working pipeline with a GPU saliency (or CPU) detector. Read on only when you want
+to customize the build, enable the real YOLOv8/TensorRT detector, deploy to a
+Jetson, or troubleshoot.
+
 ## Building manually
 
 `launch.sh` builds for you, but you can drive CMake directly — useful when you
@@ -192,8 +223,15 @@ Supply these as `-D<FLAG>=<VALUE>` on the `cmake -S . -B build` configure line:
 | `-DVCD_FORCE_CPU=ON` | `OFF` | Skip CUDA entirely and build the CPU-only saliency detector, even on a machine that has a GPU. |
 | `-DCMAKE_CUDA_ARCHITECTURES=<arch>` | `native` (CMake ≥ 3.24) | Target GPU compute capability. E.g. `86` for an RTX 3060, `87` for Jetson Orin, `75` for Turing. Set this if `native` detection fails or you cross-compile. |
 
-> The env var `VCD_FORCE_CPU=1` understood by `launch.sh` simply maps to
-> `-DVCD_FORCE_CPU=ON` on the configure line above.
+> `launch.sh` exposes these flags as environment variables so you don't have to
+> drive CMake by hand:
+>
+> | Env var | Maps to |
+> |---|---|
+> | `VCD_FORCE_CPU=1` | `-DVCD_FORCE_CPU=ON` |
+> | `VCD_WITH_TENSORRT=1` | `-DVCD_WITH_TENSORRT=ON` |
+> | `TENSORRT_DIR=<path>` | `-DTENSORRT_DIR=<path>` (tarball install; also added to the ML peer's `LD_LIBRARY_PATH` at runtime) |
+> | `CMAKE_CUDA_ARCHITECTURES=<arch>` | `-DCMAKE_CUDA_ARCHITECTURES=<arch>` |
 
 ### Worked examples
 
@@ -216,6 +254,119 @@ cmake --build build -j
 
 If you change a flag, re-run the `cmake -S . -B build …` configure step (CMake
 caches options in `build/CMakeCache.txt`); for a clean slate, `rm -rf build` first.
+
+### Installing the TensorRT C++ SDK (x86 desktop)
+
+The real YOLO backend links `nvinfer`, so you need the TensorRT **C++ SDK** —
+headers (`NvInfer.h`) and dev libs. Get it from
+[NVIDIA's TensorRT downloads](https://developer.nvidia.com/tensorrt) (free login),
+matching your CUDA version.
+
+> **The pip `tensorrt` wheels are not enough.** They ship the runtime
+> `libnvinfer.so` only — no `NvInfer.h`, no dev symlink — so they can *build an
+> engine* but cannot *compile* the C++ peer.
+
+**Which package?** If your CUDA is apt-managed, use the **DEB**; if it's a hand
+rolled/tarball/conda CUDA, use the **TAR**. Quick check:
+
+```bash
+dpkg -S "$(readlink -f "$(command -v nvcc)")" 2>/dev/null && echo "CUDA is apt-managed → use the deb" \
+  || echo "CUDA is not apt-managed → use the tar"
+```
+
+**Option A — DEB local repo (recommended on apt-managed CUDA).** Installs into
+`/usr`, so CMake finds it automatically (**no `TENSORRT_DIR`**) and its CUDA
+dependencies resolve against your existing toolkit. Download the
+*"TensorRT <ver> GA for Ubuntu <rel> and CUDA <range> DEB local repo Package"*
+that matches your OS + CUDA, then:
+
+```bash
+sudo dpkg -i nv-tensorrt-local-repo-ubuntu2404-11.0.0-cuda-13.0_1.0-1_amd64.deb
+sudo cp /var/nv-tensorrt-local-repo-ubuntu2404-11.0.0-cuda-13.0/*-keyring.gpg /usr/share/keyrings/
+sudo apt-get update
+sudo apt-get install -y libnvinfer-dev libnvinfer-headers-dev   # minimal C++ build deps
+#   …or the full stack incl. trtexec/parsers:  sudo apt-get install -y tensorrt
+
+# verify
+ls /usr/include/x86_64-linux-gnu/NvInfer.h  /usr/lib/x86_64-linux-gnu/libnvinfer.so
+```
+
+- **cuDNN:** TensorRT 11's lean libs usually don't need it. If `apt` reports an
+  unmet `libcudnn*` dependency, install just the `libnvinfer*` packages that do
+  resolve, or add NVIDIA's cuDNN local repo too.
+- **Version match:** the engine must match the SDK's TensorRT version. Compare
+  `dpkg -l | grep nvinfer` against the `pip show tensorrt` that built your engine;
+  if they differ, re-export the engine (with the deb you also get `trtexec`).
+
+**Option B — TAR package (no apt changes / non-apt CUDA).** Extract anywhere and
+point `TENSORRT_DIR` at it:
+
+```bash
+sudo tar -xzf TensorRT-<ver>.Linux.x86_64-gnu.cuda-<range>.tar.gz -C /opt
+ls /opt/TensorRT-<ver>/include/NvInfer.h /opt/TensorRT-<ver>/lib/libnvinfer.so
+```
+
+### Enabling real YOLO with `launch.sh`
+
+`[ml].model_path` in `topology.toml` already points at `yolov8n.engine`. With the
+SDK installed, one command flips the pipeline from saliency to real detections:
+
+```bash
+# DEB install (apt-managed CUDA): TensorRT lives in /usr — no TENSORRT_DIR needed
+VCD_WITH_TENSORRT=1 CMAKE_CUDA_ARCHITECTURES=86 ./launch.sh
+
+# TAR install alternative: point at the extracted SDK
+TENSORRT_DIR=/opt/TensorRT-<ver> VCD_WITH_TENSORRT=1 CMAKE_CUDA_ARCHITECTURES=86 ./launch.sh
+```
+
+`launch.sh` prints its resolved build config (`build config: TensorRT=1 …`) and
+warns on mistyped `VCD_*` knobs, and the ML peer logs the backend it actually
+chose — look for `[ml] backend=cuda-yolov8-trt …` (not `cuda-saliency`). If you
+see `model set but built without TensorRT`, the flag didn't take; re-run after
+`rm -rf build`.
+
+---
+
+## Running on Jetson Orin
+
+This is the **easy** platform for the TensorRT path: JetPack/L4T ships the full
+TensorRT **C++ SDK** system-wide (`/usr/include/aarch64-linux-gnu/NvInfer.h`,
+`/usr/lib/aarch64-linux-gnu/libnvinfer.so`), so CMake finds it with **no
+`TENSORRT_DIR`** needed.
+
+```bash
+# 1. Build the engine ON the Jetson (engines are NOT portable — see caveat).
+yolo export model=yolov8n.pt format=engine half=True imgsz=640
+#    …or with JetPack's bundled trtexec, straight from an ONNX:
+/usr/src/tensorrt/bin/trtexec --onnx=yolov8n.onnx --saveEngine=yolov8n.engine --fp16
+
+# 2. Build + run with TensorRT, targeting Orin's Ampere GPU (sm_87).
+VCD_WITH_TENSORRT=1 CMAKE_CUDA_ARCHITECTURES=87 ./launch.sh
+
+# 3. (Recommended) unlock max clocks before measuring throughput.
+sudo nvpmodel -m 0 && sudo jetson_clocks
+```
+
+**Critical caveat — rebuild the engine on the device.** A `.engine` is tied to
+both the **TensorRT version** and the **GPU architecture** it was built on. An
+engine built on an x86 desktop (e.g. TensorRT 11 / sm_86) will **not** deserialize
+on an Orin; build it on the Jetson with that JetPack's TensorRT. Confirm the
+version with `dpkg -l | grep nvinfer`.
+
+**Tuning for Orin:**
+
+| Lever | How | Why |
+|---|---|---|
+| FP16 | `--fp16` (trtexec) or `half=True` | ~2× over FP32 on Orin's tensor cores, negligible YOLOv8 accuracy loss |
+| DLA | `trtexec --useDLACore=0 --allowGPUFallback` | offloads inference to a DLA engine, freeing the GPU |
+| Clocks | `sudo nvpmodel -m 0 && sudo jetson_clocks` | default power modes throttle hard |
+| HW decode | swap `ffmpeg` software decode for GStreamer `nvv4l2decoder` (NVDEC) | the publisher currently does CPU decode; Orin has dedicated NVDEC |
+
+> The latest L4T for **Orin** is the **JetPack 6.x** line (Ubuntu 22.04,
+> TensorRT 10.x / CUDA 12.6). For a production pipeline you'd typically reach for
+> **DeepStream** (GStreamer + the `nvinfer` plugin) to keep frames in NVMM buffers
+> end-to-end — but this example's C++ TensorRT backend is the simplest way to get
+> real, hardware-accelerated YOLO running on the board.
 
 ---
 
@@ -252,7 +403,9 @@ crisp class/score labels from the detection sideband.
 | `yt-dlp … No video formats found!` / `This live stream … not available` | The video source's `yt-dlp` is **out of date** (YouTube changes often), or the stream ended / is restricted. | `.venv/bin/pip install -U yt-dlp` (or `… -U --pre 'yt-dlp[default]'` for nightly); or pick another public URL: `./launch.sh <youtube_url>`. The launcher now auto-updates yt-dlp each run when online. |
 | Playback sprints faster-than-realtime, then freezes, repeatedly | HLS segment pacing — ffmpeg bursts through a segment, then stalls fetching the next. | The publisher already passes ffmpeg `-re` to pace at native rate (see [Frame rate, resolution & smooth playback](#frame-rate-resolution--smooth-playback)). If still choppy, lower `[video].fps` or try a shorter-segment source. |
 | Build prints `no CUDA compiler found — using CPU fallback` | No CUDA toolkit / `nvcc` not on `PATH`. | Expected on CPU-only machines. Install the CUDA toolkit and ensure `nvcc` is on `PATH` for the GPU path, or accept the CPU detector. |
-| Engine fails to deserialize at runtime (TensorRT version error) | The `.engine` was built with a **different TensorRT major version** than the one the C++ peer links against. | Rebuild the engine with the same TensorRT version you build/link `rim_vcd_ml` with. |
+| Engine fails to deserialize at runtime (TensorRT version error) | The `.engine` was built with a **different TensorRT version or GPU architecture** than the machine running it (e.g. an x86 engine on a Jetson). Engines are not portable across either. | Rebuild the engine **on the target machine** with the same TensorRT version you build/link `rim_vcd_ml` against. On Jetson use the device's `trtexec` (see [Running on Jetson Orin](#running-on-jetson-orin)). |
+| `deserializeCudaEngine: … header.magicTag == kEXPECTED_MAGIC_TAG failed` (e.g. `1827 != 1953657958`) | The `.engine` from `yolo export format=engine` has an **Ultralytics metadata header** (`[int32 len][JSON]`) prepended before the real engine; the wrong-magic value is that header's length. | Handled automatically — the loader (`yolo_trt.cu`) detects and skips the JSON header. If you see this, your build predates that fix (`rm -rf build` and rebuild), or the file isn't a TRT engine. `trtexec`-built engines have no header. |
+| `cannot open engine yolov8n.engine` at ML startup | `VCD_WITH_TENSORRT=ON` build but the `.engine` named in `topology.toml` doesn't exist in the launch directory. | Export/build the engine first (see [Detector backends](#detector-backends)), or clear `[ml].model_path` to fall back to saliency. |
 | Dashboard won't bind / port already in use | Something else is on `8080`. | `VCD_HTTP_PORT=9090 ./launch.sh` and open that port instead. |
 | Pipeline stalls after a crash; nothing updates | Stale shared-memory regions or sockets from a previous run. | `rm -f /dev/shm/rim_vcd_* /tmp/rim_vcd_*.sock` then relaunch. (The launcher normally cleans these up on exit.) |
 
